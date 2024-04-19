@@ -1,4 +1,4 @@
-// REST API, MySQl, JSON parse and Baileys WhatsApp libraries
+// Express REST API, MySQl, JSON parse, Baileys WhatsApp and dotenv libraries
 const express = require('express');
 const mysql = require('mysql2/promise');
 const bodyParser = require('body-parser');
@@ -13,7 +13,7 @@ const dbConfig = {
     database: process.env.DB_DATABASE
 };
 
-// API port
+// App port
 const app = express();
 const port = 7000;
 
@@ -44,12 +44,13 @@ async function initializeWhatsAppConnection() {
     sock.ev.on("messages.upsert", async (m) => {
         // Getting the last message received
         const message = m.messages[0];
-        // In case number is from own number, do nothing
+        // In case message is from own number, do nothing
         if (message.key.fromMe) return;
         // Formatting the incoming WhatsApp number to WhatsApp JID
         const fromNumber = message.key.remoteJid.replace(/@s.whatsapp.net$/, '');
         // Retrieve conversation state from the database
         const conversationState = await getConversationState(fromNumber);
+        // Checks if the message is from a number in the database states
         if (conversationState) {
             // Handle the incoming message
             await handleIncomingMessage(conversationState, fromNumber, message);
@@ -133,7 +134,7 @@ async function handleIncomingMessage(conversationState, phoneNumber, message) {
             await deleteConversationState(phoneNumber);
         }
     }
-    // Otherwise ignore it and removes the phone number from the queue
+    // Otherwise ignore it and removes the phone number from the queue in the database
     else {
         await deleteConversationState(phoneNumber);
     }
@@ -152,7 +153,7 @@ async function saveResponse(phoneNumber, response, isFirstResponse) {
                 'ON DUPLICATE KEY UPDATE first_response = VALUES(first_response)',
                 [phoneNumber, response]);
         }
-        // Else, is the second response and updates the corresponding row
+        // Else, is the second response and updates the corresponding row (last one inserted)
         else {
             await connection.execute(
                 'UPDATE responses SET second_response = ? WHERE id = (' +
@@ -179,13 +180,13 @@ app.post('/envioWhatsapp', async (req, res) => {
         // API response as message successfully sent
         res.send('Mensaje enviado correctamente');
     } catch (error) {
-        // Otherwise console the error and response with error trying to send the message
+        // Otherwise console the error and sends the error response
         console.error(error);
         res.status(500).send('Error en el envio de whatsapp');
     }
 });
 
-// The first time runs the server, initialize the WhatsApp connection or restores the saved connection
+// The first time runs the server and initializes the WhatsApp connection or restores the saved connection
 app.listen(port, () => {
     console.log(`Server running on port ${port}`);
     initializeWhatsAppConnection();
