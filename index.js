@@ -117,7 +117,7 @@ async function handleIncomingMessage(conversationState, phoneNumber, message) {
             await saveResponse(phoneNumber, text, true);
             // Delays the message by 1 second and send the second question
             setTimeout(async () => {
-                await sock.sendMessage(jid, { text: 'Podrías decirnos ¿Por qué esa calificación?' });
+                await sock.sendMessage(jid, { text: 'Podrías decirnos _*¿Por qué esa calificación?*_' });
             }, 1000);
             // Sets the state as the first response has been handled
             conversationState.hasHandledFirstResponse = true;
@@ -128,7 +128,7 @@ async function handleIncomingMessage(conversationState, phoneNumber, message) {
             await saveResponse(phoneNumber, text, false);
             // Delays the message by 1 second and sends a thank you message
             setTimeout(async () => {
-                await sock.sendMessage(jid, { text: '¡Muchas gracias por tu tiempo!' });
+                await sock.sendMessage(jid, { text: '_*¡Muchas gracias por tu tiempo!*_' });
             }, 1000);
             // Removes it from the conversation state queue in the database
             await deleteConversationState(phoneNumber);
@@ -141,19 +141,34 @@ async function handleIncomingMessage(conversationState, phoneNumber, message) {
 }
 
 // Async function to save the responses in the database
+async function saveInitialResponse(phoneNumber, clientID, name, company, orderID, products) {
+    // Stablishing the database connection
+    const connection = await mysql.createConnection(dbConfig);
+    try {
+        await connection.execute(
+            'INSERT INTO responses (phone_number, clientID, name, company, orderID, products) VALUES (?, ?, ?, ?, ?, ?) ',
+            [phoneNumber, clientID, name, company, orderID, products]);
+    } finally {
+        await connection.end();
+    }
+}
+
+// Async function to update the responses in the database
 async function saveResponse(phoneNumber, response, isFirstResponse) {
     // Stablishing the database connection
     const connection = await mysql.createConnection(dbConfig);
-    // Tries to save the response in the database, at the end closes the connetion
+    // Tries to update the response in the database, at the end closes the connetion
     try {
-        // In case is the first response, proceeds to save it
+        // In case is the first response, proceeds to update the first_response field
         if (isFirstResponse) {
+            const numericValue = await extractRating(response);
             await connection.execute(
-                'INSERT INTO responses (phone_number, first_response) VALUES (?, ?) ' +
-                'ON DUPLICATE KEY UPDATE first_response = VALUES(first_response)',
-                [phoneNumber, response]);
+                'UPDATE responses SET first_response = ?, first_response_value = ? WHERE id = (' +
+                'SELECT id FROM (' +
+                'SELECT id FROM responses WHERE phone_number = ? ORDER BY id DESC LIMIT 1' +
+                ') AS subquery)', [response, numericValue, phoneNumber]);
         }
-        // Else, is the second response and updates the corresponding row (last one inserted)
+        // Else, is the second response, proceeds to update the second_response field
         else {
             await connection.execute(
                 'UPDATE responses SET second_response = ? WHERE id = (' +
@@ -166,19 +181,118 @@ async function saveResponse(phoneNumber, response, isFirstResponse) {
     }
 }
 
+// Async function to extract the rating
+async function extractRating(text) {
+    // REGEX pattern to match numbers between 1 and 5
+    const ratingPattern = /[1-5]/;
+    // REGEX pattern to match literal representations of numbers
+    const literalRatingPattern = /uno|dos|tres|cuatro|cinco/gi;
+    // Function to calculate Levenshtein distance between two strings
+    function levenshteinDistance(a, b) {
+        const m = a.length, n = b.length;
+        const dp = Array.from(Array(m + 1), () => Array(n + 1).fill(0));
+        for (let i = 0; i <= m; i++) {
+            for (let j = 0; j <= n; j++) {
+                if (i === 0) dp[i][j] = j;
+                else if (j === 0) dp[i][j] = i;
+                else if (a[i - 1] === b[j - 1]) dp[i][j] = dp[i - 1][j - 1];
+                else dp[i][j] = 1 + Math.min(dp[i - 1][j], dp[i][j - 1], dp[i - 1][j - 1]);
+            }
+        }
+        return dp[m][n];
+    }
+    // Search for numerical rating in the text
+    let match = text.match(ratingPattern);
+    // If a numerical rating is found, return it
+    if (match) {
+        return parseInt(match[0]);
+    }
+    // If no numerical rating is found, search for literal representations
+    match = text.match(literalRatingPattern);
+    // If a literal rating is found, map it to the corresponding number
+    if (match) {
+        const literalToNumber = {
+            'uno': 1,
+            'dos': 2,
+            'tres': 3,
+            'cuatro': 4,
+            'cinco': 5
+        };
+        const literalRating = match[0].toLowerCase();
+        return literalToNumber[literalRating];
+    }
+    // If no rating is found, attempt to correct misspellings in each word
+    const possibleRatings = ['uno', 'dos', 'tres', 'cuatro', 'cinco'];
+    const words = text.split(/\s+/);
+    let minDistance = Infinity;
+    let closestRating = null;
+    for (let word of words) {
+        word = word.toLowerCase();
+        // Not considering the common words in a phrase like un, doy, no or es because they are unlikely to be part of a rating
+        if (word != "un" && word != "doy" && word != "no" && word != "es"){
+            for (const rating of possibleRatings) {
+                const distance = levenshteinDistance(word.toLowerCase(), rating);
+                if (distance < minDistance) {
+                    minDistance = distance;
+                    closestRating = rating;
+                }
+            }
+        }
+    }
+    // If the closest rating is within a certain threshold, return its numerical value
+    if (minDistance <= 2) {
+        return possibleRatings.indexOf(closestRating) + 1;
+    }
+    // If no rating is found or corrected, return a text that the numeric value was not found
+    return "Ningun número encontrado";
+}
+
+// Async function that checks if the number was already contacted in the day
+async function hasBeenContactedToday(phoneNumber)  {
+    // Establishing the database connection
+    const connection = await mysql.createConnection(dbConfig);
+    try {
+        // Query the responses table and get the count of contacts for the given phone number on the current day
+        const [rows] = await connection.execute('SELECT COUNT(*) FROM responses WHERE DATE(created_at)=CURDATE() AND phone_number=? ORDER BY id DESC LIMIT 1', ["591" + phoneNumber]);
+        const count = rows[0]['COUNT(*)'];
+        return count > 0 ? true : false;
+    } finally {
+        // Close the database connection
+        await connection.end();
+    }
+}
+
 // API endpoint to send the survey
 app.post('/envioWhatsapp', async (req, res) => {
-    // Getting in the body the phone number of client
-    const phoneNumber = req.body.phoneNumber;
+    // Getting in the body the ID, name and phone number of the client, the company name, the order ID and the products in the order
+    const phoneNumber = req.body.celular;
+    const clientID  = req.body.IDcliente;
+    const name = req.body.nombreCliente;
+    const company = req.body.empresa;
+    const orderID = req.body.IDpedido;
+    const products = req.body.productos;
     // Converting to WhatsApp phone number format
     const jid = '591' + phoneNumber + '@s.whatsapp.net';
     try {
-        // Sends the initial message and the first question of the survey
-        await sock.sendMessage(jid, { text: 'Gracias por tu compra! Puedes calificarla del 1 al 5.' });
-        // Save conversation state in the database
-        await saveConversationState('591' + phoneNumber, { hasHandledFirstResponse: false });
-        // API response as message successfully sent
-        res.send('Mensaje enviado correctamente');
+        // Verifies if the number was already contacted
+        const contactedToday = await hasBeenContactedToday(phoneNumber);
+        // If was not contacted yet, then proceed to send the survey questions
+        if (!contactedToday){
+            // Sends the initial message and the first question of the survey
+            await sock.sendMessage(jid, { text: 'Hola *'+ name +'*, gracias por tu compra en *'+ company +'*. \n\nEsperamos que tu pedido _#' + orderID + '_ que contiene los siguientes productos:\n\n' + '_' + products + '_' + '\n\nllegaron de manera efectiva.'});
+            await sock.sendMessage(jid, { text: 'Su experiencia con la atención es muy importante para nosotros. \n\nEn una _*escala del 1 al 5*_ donde 1 significa que no nos recomendaría y 5 que nos recomendaría totalmente. \n\n_*¿Cuál sería su calificación?*_' });
+            // Saves the response initial parameteres of the response in the database
+            await saveInitialResponse('591' + phoneNumber, clientID, name, company, orderID, products);
+            // Saves the conversation state in the database
+            await saveConversationState('591' + phoneNumber, { hasHandledFirstResponse: false });
+            // API response as message successfully sent
+            res.send('Mensaje enviado correctamente');
+        }
+        // If is already contacted send the response that the client was already messaged
+        else {
+            // API response as message successfully sent
+            res.send('Mensaje enviado anteriormente');
+        }
     } catch (error) {
         // Otherwise console the error and sends the error response
         console.error(error);
