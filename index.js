@@ -174,7 +174,7 @@ app.post('/envioWhatsapp', async (req, res) => {
     const jid = '591' + phoneNumber + '@s.whatsapp.net';
     try {
         // Sends the initial message and the first question of the survey
-        await sock.sendMessage(jid, { text: 'Gracias, por tu compra! Puedes calificarla del 1 al 5.' });
+        await sock.sendMessage(jid, { text: 'Gracias por tu compra! Puedes calificarla del 1 al 5.' });
         // Save conversation state in the database
         await saveConversationState('591' + phoneNumber, { hasHandledFirstResponse: false });
         // API response as message successfully sent
