@@ -223,13 +223,12 @@ async function extractRating(text) {
     }
     // If no rating is found, attempt to correct misspellings in each word
     const possibleRatings = ['uno', 'dos', 'tres', 'cuatro', 'cinco'];
-    const words = text.split(/\s+/);
+    const words = text.toLowerCase().split(/\s+/);
     let minDistance = Infinity;
     let closestRating = null;
     for (let word of words) {
-        word = word.toLowerCase();
         // Not considering the common words in a phrase like un, doy, no or es because they are unlikely to be part of a rating
-        if (word != "un" && word != "doy" && word != "no" && word != "es"){
+        if (word != "un" && word != "doy" && word != "no" && word != "es" && word.length < 9){
             for (const rating of possibleRatings) {
                 const distance = levenshteinDistance(word.toLowerCase(), rating);
                 if (distance < minDistance) {
