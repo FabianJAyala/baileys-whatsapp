@@ -264,11 +264,13 @@ app.post('/envioWhatsapp', async (req, res) => {
             // Saves the conversation state in the database
             await saveConversationState('591' + phoneNumber, { hasHandledFirstResponse: false });
             // API response as message successfully sent
+            console.log("Mensaje enviado correctamente a " + phoneNumber);
             res.send('Mensaje enviado correctamente');
         }
         // If is already contacted send the response that the client was already messaged
         else {
             // API response as message successfully sent
+            console.log("Mensaje enviado anteriormente a " + phoneNumber);
             res.send('Mensaje enviado anteriormente');
         }
     } catch (error) {
