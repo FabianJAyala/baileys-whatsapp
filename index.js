@@ -10,7 +10,8 @@ const dbConfig = {
     host: process.env.DB_HOST,
     user: process.env.DB_USER,
     password: process.env.DB_PASSWORD,
-    database: process.env.DB_DATABASE
+    database: process.env.DB_DATABASE,
+    connectionLimit: 10
 };
 
 // App port
@@ -22,6 +23,9 @@ app.use(bodyParser.json());
 
 // Sock definition as Baileys WhatsApp connection
 let sock;
+
+// Create a connection pool for the database
+const pool = mysql.createPool(dbConfig);
 
 // Async function to connect to WhatsApp web via QR
 async function initializeWhatsAppConnection() {
@@ -58,49 +62,44 @@ async function initializeWhatsAppConnection() {
     });
 }
 
+// Async function to execute queries using the connection pool
+async function executeQuery(sql, params) {
+    const connection = await pool.getConnection();
+    try {
+        const [rows] = await connection.execute(sql, params);
+        return rows;
+    } finally {
+        connection.release();
+    }
+}
+
 // Async function to save the conversation state in the database
 async function saveConversationState(phoneNumber, state) {
-    const connection = await mysql.createConnection(dbConfig);
-    try {
-        // Only one state can be active at a time per number
-        await connection.execute(
-            'INSERT INTO conversation_states (phone_number, state) VALUES (?, ?) ' +
-            'ON DUPLICATE KEY UPDATE state = VALUES(state)',
-            [phoneNumber, JSON.stringify(state)]
-        );
-    } finally {
-        await connection.end();
-    }
+    await executeQuery(
+        'INSERT INTO conversation_states (phone_number, state) VALUES (?, ?) ' +
+        'ON DUPLICATE KEY UPDATE state = VALUES(state)',
+        [phoneNumber, JSON.stringify(state)]
+    );
 }
 
 // Async function to get conversation state from the database
 async function getConversationState(phoneNumber) {
-    const connection = await mysql.createConnection(dbConfig);
-    try {
-        const [rows] = await connection.execute(
-            'SELECT state FROM conversation_states WHERE phone_number = ?',
-            [phoneNumber]
-        );
-        if (rows.length > 0) {
-            return JSON.parse(rows[0].state);
-        }
-        return null;
-    } finally {
-        await connection.end();
+    const rows = await executeQuery(
+        'SELECT state FROM conversation_states WHERE phone_number = ?',
+        [phoneNumber]
+    );
+    if (rows.length > 0) {
+        return JSON.parse(rows[0].state);
     }
+    return null;
 }
 
 // Async function to delete conversation state from the database
 async function deleteConversationState(phoneNumber) {
-    const connection = await mysql.createConnection(dbConfig);
-    try {
-        await connection.execute(
-            'DELETE FROM conversation_states WHERE phone_number = ?',
-            [phoneNumber]
-        );
-    } finally {
-        await connection.end();
-    }
+    await executeQuery(
+        'DELETE FROM conversation_states WHERE phone_number = ?',
+        [phoneNumber]
+    );
 }
 
 // Async function to handle incoming messages
@@ -109,7 +108,7 @@ async function handleIncomingMessage(conversationState, phoneNumber, message) {
     const jid = phoneNumber + '@s.whatsapp.net';
     // Verifies the type of the upcoming message
     const text = message.message.conversation || message.message.extendedTextMessage?.text;
-     // Checks if the message is in text format
+    // Checks if the message is in text format
     if (!!text) {
         // Check if is the first response of the survey
         if (!conversationState.hasHandledFirstResponse) {
@@ -142,42 +141,29 @@ async function handleIncomingMessage(conversationState, phoneNumber, message) {
 
 // Async function to save the responses in the database
 async function saveInitialResponse(phoneNumber, clientID, name, company, orderID, products) {
-    // Stablishing the database connection
-    const connection = await mysql.createConnection(dbConfig);
-    try {
-        await connection.execute(
-            'INSERT INTO responses (phone_number, clientID, name, company, orderID, products) VALUES (?, ?, ?, ?, ?, ?) ',
-            [phoneNumber, clientID, name, company, orderID, products]);
-    } finally {
-        await connection.end();
-    }
+    await executeQuery(
+        'INSERT INTO responses (phone_number, clientID, name, company, orderID, products) VALUES (?, ?, ?, ?, ?, ?) ',
+        [phoneNumber, clientID, name, company, orderID, products]);
 }
 
 // Async function to update the responses in the database
 async function saveResponse(phoneNumber, response, isFirstResponse) {
-    // Stablishing the database connection
-    const connection = await mysql.createConnection(dbConfig);
-    // Tries to update the response in the database, at the end closes the connetion
-    try {
-        // In case is the first response, proceeds to update the first_response field
-        if (isFirstResponse) {
-            const numericValue = await extractRating(response);
-            await connection.execute(
-                'UPDATE responses SET first_response = ?, first_response_value = ? WHERE id = (' +
-                'SELECT id FROM (' +
-                'SELECT id FROM responses WHERE phone_number = ? ORDER BY id DESC LIMIT 1' +
-                ') AS subquery)', [response, numericValue, phoneNumber]);
-        }
-        // Else, is the second response, proceeds to update the second_response field
-        else {
-            await connection.execute(
-                'UPDATE responses SET second_response = ? WHERE id = (' +
-                'SELECT id FROM (' +
-                'SELECT id FROM responses WHERE phone_number = ? ORDER BY id DESC LIMIT 1' +
-                ') AS subquery)', [response, phoneNumber]);
-        }
-    } finally {
-        await connection.end();
+    // In case is the first response, proceeds to update the first_response field
+    if (isFirstResponse) {
+        const numericValue = await extractRating(response);
+        await executeQuery(
+            'UPDATE responses SET first_response = ?, first_response_value = ? WHERE id = (' +
+            'SELECT id FROM (' +
+            'SELECT id FROM responses WHERE phone_number = ? ORDER BY id DESC LIMIT 1' +
+            ') AS subquery)', [response, numericValue, phoneNumber]);
+    }
+    // Else, is the second response, proceeds to update the second_response field
+    else {
+        await executeQuery(
+            'UPDATE responses SET second_response = ? WHERE id = (' +
+            'SELECT id FROM (' +
+            'SELECT id FROM responses WHERE phone_number = ? ORDER BY id DESC LIMIT 1' +
+            ') AS subquery)', [response, phoneNumber]);
     }
 }
 
@@ -248,17 +234,10 @@ async function extractRating(text) {
 
 // Async function that checks if the number was already contacted in the day
 async function hasBeenContactedToday(phoneNumber)  {
-    // Establishing the database connection
-    const connection = await mysql.createConnection(dbConfig);
-    try {
-        // Query the responses table and get the count of contacts for the given phone number on the current day
-        const [rows] = await connection.execute('SELECT COUNT(*) FROM responses WHERE DATE(created_at)=CURDATE() AND phone_number=? ORDER BY id DESC LIMIT 1', ["591" + phoneNumber]);
-        const count = rows[0]['COUNT(*)'];
-        return count > 0 ? true : false;
-    } finally {
-        // Close the database connection
-        await connection.end();
-    }
+    // Query the responses table and get the count of contacts for the given phone number on the current day
+    const rows = await executeQuery('SELECT COUNT(*) FROM responses WHERE DATE(created_at)=CURDATE() AND phone_number=? ORDER BY id DESC LIMIT 1', ["591" + phoneNumber]);
+    const count = rows[0]['COUNT(*)'];
+    return count > 0 ? true : false;
 }
 
 // API endpoint to send the survey
