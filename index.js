@@ -104,6 +104,26 @@ async function deleteConversationState(phoneNumber) {
 
 // Async function to handle incoming messages
 async function handleIncomingMessage(conversationState, phoneNumber, message) {
+    // Retrieve the creation time of the conversation from the database
+    const creationTime = await getCreationTime(phoneNumber);
+    // If creation time is not found, log an error and return
+    if (!creationTime) {
+        console.error("No hay registro del número: ", phoneNumber);
+        return;
+    }
+    // Getting the current time
+    const currentTime = Date.now();
+    // UTC formatted times to avoid time zone differences
+    const creationTimeUTC = new Date(creationTime).getTime();
+    const currentTimeUTC = new Date(currentTime).getTime();
+    // Calculate the time difference between the current time and the creation time
+    const timeDifference = currentTimeUTC - creationTimeUTC;
+    // Check if the message was received within the first 5 seconds of the conversation, that most likely is an automated response
+    if (timeDifference <= 5000) {
+        // If time is less than 5 seconds, log as ignored message and return
+        console.log("Mensaje ignorado, automático de WhatsApp Business.");
+        return;
+    }
     // Converts the phone number to WhatsApp JID
     const jid = phoneNumber + '@s.whatsapp.net';
     // Verifies the type of the upcoming message
@@ -116,7 +136,7 @@ async function handleIncomingMessage(conversationState, phoneNumber, message) {
             await saveResponse(phoneNumber, text, true);
             // Delays the message by 1 second and send the second question
             setTimeout(async () => {
-                await sock.sendMessage(jid, { text: 'Podrías decirnos _*¿Por qué esa calificación?*_' });
+                await sock.sendMessage(jid, { text: '_*¿Tiene algún comentario, recomendación o sugerencia que desee realizarnos?*_' });
             }, 1000);
             // Sets the state as the first response has been handled
             conversationState.hasHandledFirstResponse = true;
@@ -143,7 +163,20 @@ async function handleIncomingMessage(conversationState, phoneNumber, message) {
 async function saveInitialResponse(phoneNumber, clientID, name, company, orderID, products) {
     await executeQuery(
         'INSERT INTO responses (phone_number, clientID, name, company, orderID, products) VALUES (?, ?, ?, ?, ?, ?) ',
-        [phoneNumber, clientID, name, company, orderID, products]);
+        [
+            phoneNumber, clientID, name, company, orderID, products]);
+}
+
+// Async function to retrieve the creation time of the conversation from the database
+async function getCreationTime(phoneNumber) {
+    const rows = await executeQuery(
+        'SELECT UNIX_TIMESTAMP(created_at) AS creation_time FROM responses WHERE phone_number = ? ORDER BY id ASC LIMIT 1',
+        [phoneNumber]
+    );
+    if (rows.length > 0) {
+        return rows[0].creation_time * 1000;
+    }
+    return null;
 }
 
 // Async function to update the responses in the database
@@ -257,8 +290,8 @@ app.post('/envioWhatsapp', async (req, res) => {
         // If was not contacted yet, then proceed to send the survey questions
         if (!contactedToday){
             // Sends the initial message and the first question of the survey
-            await sock.sendMessage(jid, { text: 'Hola *'+ name +'*, gracias por tu compra en *'+ company +'*. \n\nEsperamos que tu pedido _#' + orderID + '_ que contiene los siguientes productos:\n\n' + '_' + products + '_' + '\n\nllegaron de manera efectiva.'});
-            await sock.sendMessage(jid, { text: 'Su experiencia con la atención es muy importante para nosotros. \n\nEn una _*escala del 1 al 5*_ donde 1 significa que no nos recomendaría y 5 que nos recomendaría totalmente. \n\n_*¿Cuál sería su calificación?*_' });
+            await sock.sendMessage(jid, { text: 'Hola *'+ name +'*, muchas gracias por realizar su compra en *'+ company +'*. \n\nEsperamos que tu pedido _#' + orderID + '_ que contiene los siguientes productos:\n\n' + '_' + products + '_' + '\n\nllegaron de manera efectiva.'});
+            await sock.sendMessage(jid, { text: 'Su experiencia con nuestra atención es muy importante para nosotros. \n\nEn una _*escala del 1 al 5*_ donde 1 significa que NO nos recomendaría y 5 que SI nos recomendaría totalmente. \n\n_*¿Cuál sería su calificación?*_' });
             // Saves the response initial parameteres of the response in the database
             await saveInitialResponse('591' + phoneNumber, clientID, name, company, orderID, products);
             // Saves the conversation state in the database
