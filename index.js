@@ -1,9 +1,11 @@
-// Express REST API, MySQl, JSON parse, Baileys WhatsApp and dotenv libraries
+// Express REST API with CORS, MySQl, JSON parse, Baileys WhatsApp and dotenv libraries
 const express = require('express');
 const mysql = require('mysql2/promise');
 const bodyParser = require('body-parser');
 const { useMultiFileAuthState, makeWASocket } = require("@whiskeysockets/baileys");
+const cors = require('cors');
 require('dotenv').config();
+
 
 // Database Configuration
 const dbConfig = {
@@ -20,6 +22,9 @@ const port = 7000;
 
 // JSON parse
 app.use(bodyParser.json());
+
+//CORS
+app.use(cors());
 
 // Sock definition as Baileys WhatsApp connection
 let sock;
